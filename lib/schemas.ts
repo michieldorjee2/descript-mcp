@@ -96,11 +96,11 @@ export const listJobsSchema = {
 };
 
 export const getJobSchema = {
-  job_id: z.string().uuid().describe("Job ID to retrieve"),
+  job_id: z.string().describe("Job ID to retrieve (e.g. 'project-media-import-xxxx' or 'agent-xxxx')"),
 };
 
 export const cancelJobSchema = {
-  job_id: z.string().uuid().describe("Job ID to cancel"),
+  job_id: z.string().describe("Job ID to cancel"),
 };
 
 export const editInDescriptSchema = {
