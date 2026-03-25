@@ -1,4 +1,4 @@
-const BASE_URL = "https://api.descriptapi.com/v1";
+const BASE_URL = "https://descriptapi.com/v1";
 
 interface ImportProjectMediaBody {
   project_name: string;
