@@ -1,4 +1,5 @@
-import { createMcpHandler } from "mcp-handler";
+import { createMcpHandler, withMcpAuth } from "mcp-handler";
+import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import * as client from "../lib/descript-client.js";
 import { pollJobUntilComplete } from "../lib/polling.js";
 import {
@@ -11,18 +12,35 @@ import {
   getPublishedProjectSchema,
   generateCaptionsSchema,
 } from "../lib/schemas.js";
+import {
+  handleProtectedResourceMetadata,
+  handleAuthServerMetadata,
+  handleRegister,
+  handleAuthorize,
+  handleToken,
+} from "../lib/oauth.js";
 
+// --- Token extraction ---
+// Tries authInfo first (from OAuth flow), then falls back to header (direct usage)
 function getToken(extra: any): string {
+  // OAuth flow: token comes via authInfo from withMcpAuth
+  const authToken = extra?.authInfo?.token;
+  if (authToken) return authToken;
+
+  // Fallback: direct header (for non-OAuth clients)
   const headers = extra?.requestInfo?.headers;
   const raw =
     headers?.["x-descript-api-token"] ||
     headers?.["authorization"];
-  const token = typeof raw === "string"
-    ? raw.replace(/^Bearer\s+/i, "")
-    : Array.isArray(raw) ? raw[0]?.replace(/^Bearer\s+/i, "") : undefined;
+  const token =
+    typeof raw === "string"
+      ? raw.replace(/^Bearer\s+/i, "")
+      : Array.isArray(raw)
+        ? raw[0]?.replace(/^Bearer\s+/i, "")
+        : undefined;
   if (!token) {
     throw new Error(
-      "Missing Descript API token. Set the x-descript-api-token header in your MCP client config."
+      "Missing Descript API token. Either use OAuth or set the x-descript-api-token header."
     );
   }
   return token;
@@ -32,7 +50,8 @@ function text(content: string) {
   return { content: [{ type: "text" as const, text: content }] };
 }
 
-const handler = createMcpHandler(
+// --- MCP Handler ---
+const mcpHandler = createMcpHandler(
   (server) => {
     // 1. Check API Status
     server.tool(
@@ -152,11 +171,10 @@ const handler = createMcpHandler(
         const importJob = await pollJobUntilComplete(
           token,
           importResult.job_id,
-          { maxAttempts: 5, intervalMs: 3000 } // ~15 seconds max
+          { maxAttempts: 5, intervalMs: 3000 }
         );
 
         if (!importJob) {
-          // Import still running - return early
           return text(
             JSON.stringify(
               {
@@ -173,7 +191,6 @@ const handler = createMcpHandler(
           );
         }
 
-        // Check if import failed
         const importStatus = (importJob.result as any)?.status;
         if (importJob.job_state === "failed" || importStatus === "error") {
           return text(
@@ -196,7 +213,6 @@ const handler = createMcpHandler(
             "Export the transcript of this project. Output the full transcript text.",
         });
 
-        // Don't wait for agent - return immediately with both job IDs
         return text(
           JSON.stringify(
             {
@@ -219,4 +235,47 @@ const handler = createMcpHandler(
   { basePath: "/api" }
 );
 
-export { handler as GET, handler as POST, handler as DELETE };
+// --- Wrap MCP handler with OAuth auth (optional - not required) ---
+const verifyToken = async (
+  _req: Request,
+  bearerToken?: string
+): Promise<AuthInfo | undefined> => {
+  if (!bearerToken) return undefined;
+  return {
+    token: bearerToken,
+    clientId: "descript-mcp",
+    scopes: ["descript"],
+  };
+};
+
+const authedMcpHandler = withMcpAuth(mcpHandler, verifyToken, {
+  required: false,
+});
+
+// --- Main router: OAuth endpoints + MCP ---
+async function router(req: Request): Promise<Response> {
+  const url = new URL(req.url);
+  const path = url.pathname;
+
+  // OAuth discovery & endpoints
+  if (path === "/.well-known/oauth-protected-resource") {
+    return handleProtectedResourceMetadata(req);
+  }
+  if (path === "/.well-known/oauth-authorization-server") {
+    return handleAuthServerMetadata(req);
+  }
+  if (path === "/oauth/register") {
+    return handleRegister(req);
+  }
+  if (path === "/oauth/authorize") {
+    return handleAuthorize(req);
+  }
+  if (path === "/oauth/token") {
+    return handleToken(req);
+  }
+
+  // Everything else -> MCP handler (with optional auth)
+  return authedMcpHandler(req);
+}
+
+export { router as GET, router as POST, router as DELETE };
