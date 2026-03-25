@@ -152,21 +152,3 @@ export const generateCaptionsSchema = {
     .optional()
     .describe("Name for the Descript project (defaults to 'Caption Generation')"),
 };
-
-export const getCachedResultSchema = {
-  job_id: z
-    .string()
-    .describe(
-      "The job_id (import or agent) or caption_job_id to look up cached results for."
-    ),
-};
-
-export const listCaptionJobsSchema = {
-  limit: z
-    .number()
-    .int()
-    .min(1)
-    .max(50)
-    .optional()
-    .describe("Max number of caption jobs to return (default 20, max 50)"),
-};
