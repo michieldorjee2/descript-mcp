@@ -1,4 +1,16 @@
+import { logger } from "./logger.js";
+
 const BASE_URL = "https://descriptapi.com/v1";
+
+export class DescriptApiError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly body: string
+  ) {
+    super(`Descript API error ${status}: ${body}`);
+    this.name = "DescriptApiError";
+  }
+}
 
 interface ImportProjectMediaBody {
   project_name: string;
@@ -77,49 +89,99 @@ interface PublishedProject {
   subtitles?: string;
 }
 
+const MAX_RETRIES = 3;
+const BASE_DELAY_MS = 1000;
+
+function isRetryable(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
 async function request<T>(
   token: string,
   method: string,
   path: string,
-  body?: unknown
+  body?: unknown,
+  requestId?: string
 ): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    method,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    ...(body ? { body: JSON.stringify(body) } : {}),
-  });
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const startMs = Date.now();
+    let res: Response;
 
-  if (res.status === 204) return undefined as T;
+    try {
+      res = await fetch(`${BASE_URL}${path}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      });
+    } catch (networkErr) {
+      const delay = BASE_DELAY_MS * Math.pow(2, attempt);
+      if (attempt < MAX_RETRIES) {
+        logger.warn(
+          "descript_api_network_error",
+          { method, path, attempt, delay_ms: delay, error: String(networkErr) },
+          requestId
+        );
+        await new Promise((r) => setTimeout(r, delay));
+        continue;
+      }
+      throw networkErr;
+    }
 
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(
-      `Descript API error ${res.status}: ${JSON.stringify(data)}`
+    const latencyMs = Date.now() - startMs;
+    logger.info(
+      "descript_api_call",
+      { method, path, status: res.status, latency_ms: latencyMs, attempt },
+      requestId
     );
+
+    if (res.status === 204) return undefined as T;
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      if (isRetryable(res.status) && attempt < MAX_RETRIES) {
+        const delay = BASE_DELAY_MS * Math.pow(2, attempt);
+        logger.warn(
+          "descript_api_retrying",
+          { method, path, status: res.status, attempt, delay_ms: delay },
+          requestId
+        );
+        await new Promise((r) => setTimeout(r, delay));
+        continue;
+      }
+      throw new DescriptApiError(res.status, JSON.stringify(data));
+    }
+
+    return data as T;
   }
-  return data as T;
+
+  // Unreachable, but satisfies TypeScript
+  throw new DescriptApiError(0, "Request exhausted retries");
 }
 
 export async function importProjectMedia(
   token: string,
-  body: ImportProjectMediaBody
+  body: ImportProjectMediaBody,
+  requestId?: string
 ): Promise<JobResponse> {
-  return request<JobResponse>(token, "POST", "/jobs/import/project_media", body);
+  return request<JobResponse>(token, "POST", "/jobs/import/project_media", body, requestId);
 }
 
 export async function createAgentJob(
   token: string,
-  body: AgentJobBody
+  body: AgentJobBody,
+  requestId?: string
 ): Promise<JobResponse> {
-  return request<JobResponse>(token, "POST", "/jobs/agent", body);
+  return request<JobResponse>(token, "POST", "/jobs/agent", body, requestId);
 }
 
 export async function listJobs(
   token: string,
-  params: ListJobsParams
+  params: ListJobsParams,
+  requestId?: string
 ): Promise<JobListResponse> {
   const qs = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
@@ -129,49 +191,59 @@ export async function listJobs(
   return request<JobListResponse>(
     token,
     "GET",
-    `/jobs${query ? `?${query}` : ""}`
+    `/jobs${query ? `?${query}` : ""}`,
+    undefined,
+    requestId
   );
 }
 
 export async function getJob(
   token: string,
-  jobId: string
+  jobId: string,
+  requestId?: string
 ): Promise<JobStatus> {
-  return request<JobStatus>(token, "GET", `/jobs/${jobId}`);
+  return request<JobStatus>(token, "GET", `/jobs/${jobId}`, undefined, requestId);
 }
 
 export async function cancelJob(
   token: string,
-  jobId: string
+  jobId: string,
+  requestId?: string
 ): Promise<void> {
-  return request<void>(token, "DELETE", `/jobs/${jobId}`);
+  return request<void>(token, "DELETE", `/jobs/${jobId}`, undefined, requestId);
 }
 
 export async function checkStatus(
-  token: string
+  token: string,
+  requestId?: string
 ): Promise<{ status: string }> {
-  return request<{ status: string }>(token, "GET", "/status");
+  return request<{ status: string }>(token, "GET", "/status", undefined, requestId);
 }
 
 export async function generateEditInDescriptUrl(
   token: string,
-  body: EditInDescriptBody
+  body: EditInDescriptBody,
+  requestId?: string
 ): Promise<{ url: string }> {
   return request<{ url: string }>(
     token,
     "POST",
     "/edit_in_descript/schema",
-    body
+    body,
+    requestId
   );
 }
 
 export async function getPublishedProject(
   token: string,
-  slug: string
+  slug: string,
+  requestId?: string
 ): Promise<PublishedProject> {
   return request<PublishedProject>(
     token,
     "GET",
-    `/published_projects/${encodeURIComponent(slug)}`
+    `/published_projects/${encodeURIComponent(slug)}`,
+    undefined,
+    requestId
   );
 }

@@ -1,26 +1,27 @@
 import { getJob, type JobStatus } from "./descript-client.js";
+import { logger } from "./logger.js";
 
 interface PollOptions {
   maxAttempts?: number;
   intervalMs?: number;
 }
 
-/**
- * Poll a Descript job until it reaches a terminal state ("stopped")
- * or the max attempts are exhausted.
- *
- * Returns the job status if complete, or null if still running after max attempts.
- */
 export async function pollJobUntilComplete(
   token: string,
   jobId: string,
-  options?: PollOptions
+  options?: PollOptions,
+  requestId?: string
 ): Promise<JobStatus | null> {
-  const maxAttempts = options?.maxAttempts ?? 5;
-  const intervalMs = options?.intervalMs ?? 3000;
+  const maxAttempts = options?.maxAttempts ?? 20;
+  const intervalMs = options?.intervalMs ?? 10_000;
 
   for (let i = 0; i < maxAttempts; i++) {
-    const job = await getJob(token, jobId);
+    const job = await getJob(token, jobId, requestId);
+    logger.debug(
+      "poll_job_status",
+      { job_id: jobId, job_state: job.job_state, attempt: i + 1, max_attempts: maxAttempts },
+      requestId
+    );
     if (job.job_state === "stopped" || job.job_state === "failed") {
       return job;
     }
